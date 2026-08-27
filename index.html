@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Auto-Scan Shiny Counter</title>
+    <title>Auto-Scan Shiny Counter - Duration Mode</title>
+    <!-- Include Tesseract.js -->
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@v5/dist/tesseract.min.js"></script>
     <style>
         :root {
@@ -11,6 +12,8 @@
             --card-bg: #1e1e24;
             --accent: #f59e0b;
             --accent-glow: rgba(245, 158, 11, 0.3);
+            --shiny-accent: #ec4899;
+            --shiny-glow: rgba(236, 72, 153, 0.4);
             --text-main: #f3f4f6;
             --text-muted: #9ca3af;
             --border: #2d2d38;
@@ -52,6 +55,18 @@
             border-radius: 12px;
             padding: 15px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card.shiny-alert {
+            border-color: var(--shiny-accent);
+            box-shadow: 0 0 20px var(--shiny-glow);
+            animation: pulseAlert 1.5s infinite alternate;
+        }
+
+        @keyframes pulseAlert {
+            0% { border-color: var(--shiny-accent); }
+            100% { border-color: #fde047; box-shadow: 0 0 30px rgba(253, 224, 71, 0.6); }
         }
 
         .camera-container {
@@ -75,7 +90,6 @@
             transition: transform 0.1s ease-out;
         }
 
-        /* Movable Scan Target Box */
         .scan-box {
             position: absolute;
             width: 180px;
@@ -148,6 +162,12 @@
         }
 
         .badge.active { background: var(--success); color: #000; }
+        .badge.shiny { background: var(--shiny-accent); color: #fff; animation: pulseBadge 1s infinite alternate; }
+
+        @keyframes pulseBadge {
+            0% { opacity: 0.8; }
+            100% { opacity: 1; transform: scale(1.05); }
+        }
 
         .counter-section {
             text-align: center;
@@ -191,10 +211,10 @@
 
 <div class="container">
     <header>
-        <h1>✨ High-Contrast OCR Counter</h1>
+        <h1>✨ 2-Second Text Duration Counter</h1>
     </header>
 
-    <div class="card">
+    <div class="card" id="mainCard">
         <div class="camera-container" id="cameraContainer">
             <video id="webcam" autoplay playsinline muted></video>
             <div class="scan-box" id="scanBox">Drag over 3DS Text</div>
@@ -203,7 +223,7 @@
         <div class="settings-grid">
             <div class="settings-row">
                 <label for="triggerKeyword">Target Trigger Word / Text</label>
-                <input type="text" id="triggerKeyword" value="Wild" placeholder="e.g. Wild, Encounter, Battle">
+                <input type="text" id="triggerKeyword" value="Wild" placeholder="e.g. Wild, Encounter">
             </div>
             <div class="settings-row">
                 <label for="zoomRange">Camera Zoom (<span id="zoomValue">1.0</span>x)</label>
@@ -222,6 +242,7 @@
         </div>
     </div>
 
+    <!-- Counter Card -->
     <div class="card counter-section">
         <div style="font-size: 0.9rem; color: var(--text-muted);">Encounters Tracked</div>
         <div class="count-display" id="countDisplay">0</div>
@@ -243,6 +264,10 @@
     let videoStream = null;
     let worker = null;
 
+    // State tracking for text duration on screen
+    let textFirstSeenTimestamp = null;
+    let shinyFlaggedForCurrentEncounter = false;
+
     const videoElement = document.getElementById('webcam');
     const scannerStatus = document.getElementById('scannerStatus');
     const scanBox = document.getElementById('scanBox');
@@ -250,8 +275,8 @@
     const zoomRange = document.getElementById('zoomRange');
     const zoomValue = document.getElementById('zoomValue');
     const triggerKeywordInput = document.getElementById('triggerKeyword');
+    const mainCard = document.getElementById('mainCard');
 
-    // Draggable scan box logic
     let isDragging = false;
     let startX, startY, initialX = 20, initialY = 120;
 
@@ -334,10 +359,14 @@
             btn.style.color = "#000";
             btn.innerText = "Scanning Active...";
             scannerStatus.className = "badge active";
+            mainCard.classList.remove('shiny-alert');
+            textFirstSeenTimestamp = null;
+            shinyFlaggedForCurrentEncounter = false;
 
             await initWorker();
 
-            scanInterval = setInterval(checkFrameText, 4000);
+            // Run OCR check every 1.2 seconds for smooth duration tracking
+            scanInterval = setInterval(checkFrameText, 1200);
         } else {
             btn.style.background = "#272730";
             btn.style.color = "var(--text-main)";
@@ -367,33 +396,57 @@
         const boxW = scanBox.clientWidth * scaleX;
         const boxH = scanBox.clientHeight * scaleY;
 
-        // Upscale and Preprocess Image (Grayscale + High Contrast for crisp OCR)
         const cropCanvas = document.createElement('canvas');
-        cropCanvas.width = boxW * 2;   // 2x upscale for sharp text
+        cropCanvas.width = boxW * 2;
         cropCanvas.height = boxH * 2;
         const cropCtx = cropCanvas.getContext('2d');
         
-        // Apply image filters to clean up screen glare and boost font edges
         cropCtx.filter = 'grayscale(100%) contrast(200%) brightness(110%)';
         cropCtx.drawImage(canvas, boxX, boxY, boxW, boxH, 0, 0, cropCanvas.width, cropCanvas.height);
 
-        scannerStatus.innerText = "Processing Text...";
+        scannerStatus.innerText = "Scanning...";
 
         try {
             const { data: { text } } = await worker.recognize(cropCanvas);
-            const cleanText = text.toLowerCase().replace(/[^a-z0-9\s]/gi, ''); // remove weird symbols
+            const cleanText = text.toLowerCase().replace(/[^a-z0-9\s]/gi, '');
             const targetWord = triggerKeywordInput.value.trim().toLowerCase();
-
-            console.log("Preprocessed OCR Read:", cleanText);
+            const now = Date.now();
 
             if (targetWord && cleanText.includes(targetWord)) {
-                adjustCount(1);
-                scannerStatus.innerText = `Matched "${targetWord}"! (+1)`;
-                
-                toggleAutoScan();
-                setTimeout(() => { if (!isScanning) toggleAutoScan(); }, 6000);
+                // Text is visible in the frame!
+                if (!textFirstSeenTimestamp) {
+                    // First time seeing the keyword for this encounter
+                    textFirstSeenTimestamp = now;
+                    adjustCount(1); // Log the encounter immediately
+                    scannerStatus.className = "badge active";
+                    scannerStatus.innerText = `Encounter detected! Watching duration...`;
+                } else {
+                    // Text is still on screen. Check how long it's been there.
+                    const durationOnScreen = now - textFirstSeenTimestamp;
+
+                    if (durationOnScreen >= 2000 && !shinyFlaggedForCurrentEncounter) {
+                        // It has stayed on screen >= 2 seconds! Flag as Shiny!
+                        shinyFlaggedForCurrentEncounter = true;
+                        scannerStatus.className = "badge shiny";
+                        scannerStatus.innerText = `✨ SHINY DETECTED! ( > 2s duration )`;
+                        mainCard.classList.add('shiny-alert');
+
+                        if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150, 500]);
+
+                        // Pause scanning to give user time to handle the encounter
+                        toggleAutoScan();
+                        setTimeout(() => { if (!isScanning) toggleAutoScan(); }, 8000);
+                    } else if (!shinyFlaggedForCurrentEncounter) {
+                        scannerStatus.innerText = `Text on screen... (${(durationOnScreen/1000).toFixed(1)}s)`;
+                    }
+                }
             } else {
-                scannerStatus.innerText = `Watching for "${targetWord}"...`;
+                // Text has disappeared or isn't there yet — reset timer for next encounter
+                if (textFirstSeenTimestamp && !shinyFlaggedForCurrentEncounter) {
+                    scannerStatus.innerText = `Encounter logged. Waiting for next...`;
+                }
+                textFirstSeenTimestamp = null;
+                shinyFlaggedForCurrentEncounter = false;
             }
         } catch (err) {
             console.error(err);
@@ -411,6 +464,7 @@
         if (confirm("Reset counter?")) {
             currentCount = 0;
             adjustCount(0);
+            mainCard.classList.remove('shiny-alert');
         }
     }
 
