@@ -78,8 +78,8 @@
         /* Movable Scan Target Box */
         .scan-box {
             position: absolute;
-            width: 160px;
-            height: 60px;
+            width: 180px;
+            height: 65px;
             border: 2px dashed var(--accent);
             background: rgba(245, 158, 11, 0.1);
             border-radius: 6px;
@@ -191,13 +191,13 @@
 
 <div class="container">
     <header>
-        <h1>✨ Text-Scan Shiny Counter</h1>
+        <h1>✨ High-Contrast OCR Counter</h1>
     </header>
 
     <div class="card">
         <div class="camera-container" id="cameraContainer">
             <video id="webcam" autoplay playsinline muted></video>
-            <div class="scan-box" id="scanBox">Drag over text box</div>
+            <div class="scan-box" id="scanBox">Drag over 3DS Text</div>
         </div>
 
         <div class="settings-grid">
@@ -303,7 +303,7 @@
     async function startCamera() {
         try {
             videoStream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment' } 
+                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
             });
             videoElement.srcObject = videoStream;
             scannerStatus.innerText = "Camera Active";
@@ -337,7 +337,6 @@
 
             await initWorker();
 
-            // Scan text every 4 seconds to accommodate mobile processing power
             scanInterval = setInterval(checkFrameText, 4000);
         } else {
             btn.style.background = "#272730";
@@ -355,12 +354,11 @@
         const canvas = document.getElementById('snapshotCanvas');
         const ctx = canvas.getContext('2d');
         
-        canvas.width = videoElement.videoWidth || 640;
-        canvas.height = videoElement.videoHeight || 480;
+        canvas.width = videoElement.videoWidth || 1280;
+        canvas.height = videoElement.videoHeight || 720;
         
         ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
 
-        // Map container box dimensions to actual snapshot pixel coordinates
         const scaleX = canvas.width / container.clientWidth;
         const scaleY = canvas.height / container.clientHeight;
 
@@ -369,27 +367,29 @@
         const boxW = scanBox.clientWidth * scaleX;
         const boxH = scanBox.clientHeight * scaleY;
 
-        // Create a cropped canvas slice of just the user's selected reticle region
+        // Upscale and Preprocess Image (Grayscale + High Contrast for crisp OCR)
         const cropCanvas = document.createElement('canvas');
-        cropCanvas.width = boxW;
-        cropCanvas.height = boxH;
+        cropCanvas.width = boxW * 2;   // 2x upscale for sharp text
+        cropCanvas.height = boxH * 2;
         const cropCtx = cropCanvas.getContext('2d');
-        cropCtx.drawImage(canvas, boxX, boxY, boxW, boxH, 0, 0, boxW, boxH);
+        
+        // Apply image filters to clean up screen glare and boost font edges
+        cropCtx.filter = 'grayscale(100%) contrast(200%) brightness(110%)';
+        cropCtx.drawImage(canvas, boxX, boxY, boxW, boxH, 0, 0, cropCanvas.width, cropCanvas.height);
 
-        scannerStatus.innerText = "Reading Text...";
+        scannerStatus.innerText = "Processing Text...";
 
         try {
             const { data: { text } } = await worker.recognize(cropCanvas);
-            const cleanText = text.toLowerCase();
+            const cleanText = text.toLowerCase().replace(/[^a-z0-9\s]/gi, ''); // remove weird symbols
             const targetWord = triggerKeywordInput.value.trim().toLowerCase();
 
-            console.log("OCR Scanned text:", cleanText);
+            console.log("Preprocessed OCR Read:", cleanText);
 
             if (targetWord && cleanText.includes(targetWord)) {
                 adjustCount(1);
                 scannerStatus.innerText = `Matched "${targetWord}"! (+1)`;
                 
-                // Pause scanning briefly to prevent multi-triggering the same encounter box
                 toggleAutoScan();
                 setTimeout(() => { if (!isScanning) toggleAutoScan(); }, 6000);
             } else {
